@@ -124,22 +124,27 @@ export const updateLeadStatus = async (req, res) => {
     const { leadId } = req.params;
     const { status, followUpDate } = req.body;
 
-    const userId = req.user?._id;        // from auth middleware
+    const userId = req.user?._id;
     const companyId = req.user?.companyId;
 
-    // Only allow valid statuses
+    const query = {
+      _id: leadId,
+      isDeleted: false,
+      companyId,
+    };
+
+    // Agent can update only their own leads
+    if (req.user.role === "agent") {
+      query.assignedTo = userId;
+    }
+
     const allowedStatuses = ["new", "contacted", "closed", "overdue"];
 
     if (status && !allowedStatuses.includes(status)) {
       return res.status(400).json({ message: "Invalid status value" });
     }
 
-    const lead = await Lead.findOne({
-      _id: leadId,
-      companyId,
-      assignedTo: userId,   // 🔥 Agent can update ONLY their own leads
-      isDeleted: false,
-    });
+    const lead = await Lead.findOne(query);
 
     if (!lead) {
       return res.status(404).json({ message: "Lead not found" });
@@ -185,28 +190,30 @@ export const updateLead = async (req, res) => {
 
 export const deleteLead = async (req, res) => {
   try {
-    const lead = await Lead.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        companyId: req.user.companyId,
-        isDeleted: false,
-      },
-      { isDeleted: true },
-      { new: true }
-    );
+    const { leadId } = req.params;
+
+    const query = {
+      _id: leadId,
+      isDeleted: false,
+    };
+
+    if (req.user.role === "agent") {
+      query.assignedTo = req.user._id;
+      query.companyId = req.user.companyId;
+    } else {
+      query.companyId = req.user.companyId;
+    }
+
+    const lead = await Lead.findOne(query);
 
     if (!lead) {
       return res.status(404).json({ message: "Lead not found" });
     }
 
-    // Reduce leadsUsed
-    const company = await Company.findById(req.user.companyId);
-    if (company && company.leadsUsed > 0) {
-      company.leadsUsed -= 1;
-      await company.save();
-    }
+    lead.isDeleted = true;
+    await lead.save();
 
-    res.json({ message: "Lead deleted", lead });
+    res.json({ message: "Lead deleted successfully" });
 
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -266,9 +273,13 @@ export const getAssignedLeads = async (req, res) => {
   try {
     const { page = 1, limit = 10, search = "", status } = req.query;
 
+    const pageNumber = Number(page);
+    const limitNumber = Number(limit);
+
     const query = {
-      assignedTo: req.user.id,
+      assignedTo: req.user._id,
       companyId: req.user.companyId,
+      isDeleted: false,
     };
 
     if (search) {
@@ -279,7 +290,7 @@ export const getAssignedLeads = async (req, res) => {
       ];
     }
 
-    if (status) {
+    if (status && status !== "all") {
       query.status = status;
     }
 
@@ -287,20 +298,20 @@ export const getAssignedLeads = async (req, res) => {
 
     const leads = await Lead.find(query)
       .sort({ createdAt: -1 })
-      .skip((page - 1) * Number(limit))
-      .limit(Number(limit));
+      .skip((pageNumber - 1) * limitNumber)
+      .limit(limitNumber);
 
     res.json({
       leads,
       total,
-      totalPages: Math.ceil(total / limit),
-      currentPage: Number(page),
+      totalPages: Math.ceil(total / limitNumber),
+      currentPage: pageNumber,
     });
+
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
-
 
 export const getLead = async (req, res) => {
   try {
@@ -338,6 +349,7 @@ export const getAllLeads = async (req, res) => {
       order = "desc",
     } = req.query;
 
+    
     const query = {
       isDeleted: false,
     };
@@ -354,7 +366,7 @@ export const getAllLeads = async (req, res) => {
       ];
     }
 
-    if (status) {
+    if (status && status !== "all") {
       query.status = status;
     }
 
@@ -390,6 +402,7 @@ export const getAllLeads = async (req, res) => {
         pages: Math.ceil(total / limit),
       },
     });
+    console.log(query);
   } catch (error) {
     res.status(500).json({
       message: error.message,
